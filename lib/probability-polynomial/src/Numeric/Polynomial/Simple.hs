@@ -1,11 +1,14 @@
 {-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies #-}
 
 {-|
-Copyright   : Predictable Network Solutions Ltd., 2020-2024
+Copyright   : Peter Thompson, 2023-2025
+              Predictable Network Solutions Ltd., 2024
 License     : BSD-3-Clause
+Maintainer  : peter.thompson@pnsol.com
+Stability   : experimental
 Description : Polynomials and computations with them.
 -}
 module Numeric.Polynomial.Simple
@@ -31,7 +34,6 @@ module Numeric.Polynomial.Simple
     , translate
     , integrate
     , differentiate
-    , euclidianDivision
     , convolve
 
       -- ** Numerical
@@ -39,6 +41,7 @@ module Numeric.Polynomial.Simple
     , countRoots
     , isMonotonicallyIncreasingOn
     , root
+    , squareFreeFactorisation
     ) where
 
 import Control.DeepSeq
@@ -109,9 +112,9 @@ monomial n x = if x == 0 then zero else Poly (reverse (x : replicate n 0))
 {-| Construct a polynomial @a0 + a1·x + …@ from
 its list of coefficients @[a0, a1, …]@.
 -}
-fromCoefficients :: (Eq a, Num a) => [a] -> Poly a
+fromCoefficients :: Num a => [a] -> Poly a
 fromCoefficients [] = zero
-fromCoefficients as = trimPoly $ Poly as
+fromCoefficients as = Poly as
 
 {-| List the coefficients @[a0, a1, …]@
 of a polynomial @a0 + a1·x + …@.
@@ -208,8 +211,7 @@ eval :: Num a => Poly a -> a -> a
 eval (Poly as) x = foldr (\ai result -> x * result + ai) 0 as
 
 {-----------------------------------------------------------------------------
-    Advanced operations
-    Convenience
+    Convenience operations
 ------------------------------------------------------------------------------}
 
 {-|
@@ -259,8 +261,7 @@ lineFromTo (x1, y1) (x2, y2)
     shift = y1 - x1 * slope
 
 {-----------------------------------------------------------------------------
-    Advanced operations
-    Algebraic
+    Advanced Operations
 ------------------------------------------------------------------------------}
 
 {-| Indefinite integral of a polynomial with constant term zero.
@@ -361,180 +362,103 @@ convolve (lf, uf, Poly fs) (lg, ug, Poly gs)
 
 > eval (translate y p) x = eval p (x - y)
 -}
-translate :: forall a. (Fractional a, Eq a, Num a) => a -> Poly a -> Poly a
-translate y (Poly ps) =
-    sum
-      [ b `scale` binomialExpansion n
-      | (n, b) <- zip [0 ..] ps
-      ]
+translate :: (Fractional a, Eq a, Num a) => a -> Poly a -> Poly a
+translate s (Poly ps) = sum [b `scale` binomialExpansion n s | (n, b) <- zip [0 ..] ps]
   where
-    -- binomialTerm n k = coefficient of x^k in the expensation of (x - y)^n
-    binomialTerm :: Integer -> Integer -> a
-    binomialTerm n k = fromInteger (n `choose` k) * (-y) ^ (n - k)
-
-    -- binomialExpansion n = (x - y)^n  expanded as a polyonial in x
-    binomialExpansion :: Integer -> Poly a
-    binomialExpansion n = Poly (map (binomialTerm n) [0 .. n])
+    -- the binomial expansion of each power of x is a new polynomial
+    -- whose coefficients are the product of
+    -- a binomial coefficient and the shift value raised to a reducing power
+    binomialTerm :: Num a => a -> Int -> Int -> a
+    binomialTerm y n k = fromIntegral (n `choose` k) * (-y) ^ (n - k)
+    binomialExpansion :: Num a => Int -> a -> Poly a
+    binomialExpansion n y = Poly (map (binomialTerm y n) [0 .. n])
 
 {-|
-[Euclidian division of polynomials
-](https://en.wikipedia.org/wiki/Polynomial_greatest_common_divisor#Euclidean_division)
-takes two polynomials @a@ and @b ≠ 0@,
-and returns two polynomials, the quotient @q@ and the remainder @r@,
-such that
+We use Sturm's Theorem to count the number of roots of a polynomial in a given interval.
 
-> a = q * b + r
-> degree r < degree b
+(See https://en.wikipedia.org/wiki/Sturm%27s_theorem)
+Starting from polynomial p, construct the Sturm sequence p0, p1, . . ., where:
+p0 = p
+p1 = p′
+pi+1 = −rem(pi−1, pi) for i > 1
+where p′ is the derivative of p and rem(p, q) is the remainder of the Euclidian division of p by q.
+The length of this sequence is at most the degree of p.
+We define V(x) to be the number of sign variations in the sequence of numbers p0(x), p1(x), . . ..
+Sturm’s theorem states that, if p is a square-free polynomial (one without repeated roots), then
+R(l,r](p) = V (l) − V (r). This extends to non-square-free polynomials provided neither l nor r is a
+multiple root of p (a circumstance we shall ignore)
+
+We start from the tuple that emerges from disagregation.
+-}
+countRoots :: (Fractional a, Eq a, Ord a) => (a, a, Poly a) -> Int
+countRoots (l, r, p) = case degree p of
+    -- p is the zero polynomial, so it doesn't *cross* zero
+    -1 -> 0
+    -- p is a non-zero constant polynomial - no root
+    0 -> 0
+    -- p is a linear polynomial, which has a root iff it has a different sign at each end of the interval
+    1 -> if eval p l * eval p r < 0 then 1 else 0
+    -- p has degree 2 or more so we can construct the Sturm sequence
+    _ -> signVariations (sturmSequence l p) - signVariations (sturmSequence r p)
+  where
+    signVariations :: (Fractional a, Eq a, Ord a) => [a] -> Int
+    {-
+    When c0, c1, c2, . . . ck is a finite sequence of real numbers, then a sign variation or sign change in the sequence
+    is a pair of indices i < j such that cicj < 0, and either j = i + 1 or ck = 0 for all k such that i < k < j
+    -}
+    signVariations xs = length (filter (< 0) pairsMultiplied)
+      where
+        -- we implement the clause "ck = 0 for all k such that i < k < j" by removing zero elements
+        zeroesRemoved = filter (/= 0) xs
+        -- TODO: deal with all zero corner case
+        pairsMultiplied = zipWith (*) zeroesRemoved (tail zeroesRemoved)
+    sturmSequence :: (Fractional a, Eq a, Ord a) => a -> Poly a -> [a]
+    sturmSequence x q = map (flip eval x) (doSeq [differentiate q, q])
+      where
+        doSeq :: (Fractional a, Eq a, Ord a) => [Poly a] -> [Poly a]
+        {-
+           Note that this is called with a list of length 2 and grows the list, so we don't need to match all cases
+           Note that we build this backwards to avoid use of append, but this doesn't affect the number of
+           sign variations so there's no need to reverse it.
+        -}
+        doSeq x'@(xI : xIminusOne : _) = if polyRemainder == zero then x' else doSeq (negate polyRemainder : x')
+          where
+            polyRemainder = snd (euclidianDivision (xIminusOne, xI))
+        doSeq _ = error "List too short" -- prevent warning about missing cases
+
+{-|
+See https://en.wikipedia.org/wiki/Polynomial_greatest_common_divisor#Euclidean_division
+Take a pair of polynomials a, b, and produce the quotient and remainder q and r s.t. a = bq + r
+Input: a and b ≠ 0 two polynomials; Output: q, the quotient, and r, the remainder;
+Pseudocode:
+    Begin
+        q := 0
+        r := a
+        d := deg(b)
+        c := lc(b)
+        while deg(r) >= d do
+            s := lc(r)/c x^(deg(r)-d)
+            q := q + s
+            r := r − sb
+        end do
+        return (q, r)
+    end
 -}
 euclidianDivision
-    :: forall a. (Fractional a, Eq a, Ord a)
-    => Poly a -> Poly a -> (Poly a, Poly a)
-euclidianDivision pa pb
-    | pb == zero = error "Division by zero polynomial"
-    | otherwise = goDivide (zero, pa)
+    :: forall a. (Fractional a, Eq a, Ord a) => (Poly a, Poly a) -> (Poly a, Poly a)
+euclidianDivision (pa, pb) =
+    if pb == zero
+        then error "Division by zero polynomial"
+        else goDivide (zero, pa)
   where
     degB = degree pb
-
-    -- Coefficient of the highest power term
-    leadingCoefficient :: Poly a -> a
+    leadingCoefficient :: Eq a => Poly a -> a -- coefficient of the highest power term of the poly
     leadingCoefficient (Poly x) = last x
-
     lcB = leadingCoefficient pb
-
-    goDivide :: (Poly a, Poly a) -> (Poly a, Poly a)
-    goDivide (q, r)
-        | degree r < degB = (q, r)
-        | otherwise = goDivide (q + s, r - s * pb)
+    -- goDivide :: (Fractional a, Eq a, Ord a) => (Poly a, Poly a) -> (Poly a, Poly a)
+    goDivide (q, r) = if degree r < degB then (q, r) else goDivide (q + s, r - s * pb)
       where
         s = monomial (degree r - degB) (leadingCoefficient r / lcB)
-
-{-----------------------------------------------------------------------------
-    Advanced operations
-    Numerical
-------------------------------------------------------------------------------}
-{-|
-@'countRoots' (x1, x2, p)@ returns the number of /distinct/ real roots
-of the polynomial on the open interval \( (x_1, x_2) \).
-
-(Roots with higher multiplicity are each counted as a single distinct root.)
-
-This function uses [Sturm's theorem
-](https://en.wikipedia.org/wiki/Sturm%27s_theorem),
-with special provisions for roots on the boundary of the interval.
--}
-countRoots :: (Fractional a, Ord a) => (a, a, Poly a) -> Int
-countRoots (l, r, p) =
-    countRoots' $ (p `factorOutRoot` l) `factorOutRoot` r
-  where
-    -- we can now assume that the polynomial has no roots at the boundary
-    countRoots' q = case degree q of
-        -- q is the zero polynomial, so it doesn't *cross* zero
-        -1 -> 0
-        -- q is a non-zero constant polynomial - no root
-        0 -> 0
-        -- q is a linear polynomial,
-        1 -> if eval q l * eval q r < 0 then 1 else 0
-        -- q has degree 2 or more so we can construct the Sturm sequence
-        _ -> countRootsSturm (l, r, q)
-
--- | Given a polynomial \( p(x) \) and a value \( a \),
--- this functions factors out the polynomial \( (x-a)^m \),
--- where \( m \) is the highest power where this polynomial
--- divides \( p(x) \) without remainder.
---
--- * If the value \( a \) is a root of the polynomial,
---   then \( m \) is the multiplicity of the root.
--- * If the value \( a \) is not a root, then
---   \( m = 0 \) and the function returns \( p (x) \).
---
--- In other words, this function returns a polynomial \( q (x) \)
--- such that
---
--- \( p(x) = q(x)·(x - a)^m \)
---
--- where \( q(a) ≠ 0 \).
--- If the polynomial \( p(x) \) is identically 'zero',
--- we return 'zero' as well.
-factorOutRoot :: (Fractional a, Ord a) => Poly a -> a -> Poly a
-factorOutRoot p0 x0
-    | p0 == zero = zero
-    | otherwise = go p0
-  where
-    go p
-        | eval p x0 == 0 = factorOutRoot pDividedByXMinusX0 x0
-        | otherwise = p
-      where
-        xMinusX0 = monomial 1 1 - constant x0
-        (pDividedByXMinusX0, _) = p `euclidianDivision` xMinusX0
-
-{-|
-@'countRootsSturm' (x1, x2, p)@ returns the number of /distinct/ real roots
-of the polynomial @p@ on the half-open interval \( (x_1, x_2] \),
-under the following assumptions:
-
-* @'degree' p >= 2@
-* neither \( x_1 \) nor \( x_2 \) are multiple roots of \( p(x) \).
-
-This function is an implementation of [Sturm's theorem
-](https://en.wikipedia.org/wiki/Sturm%27s_theorem).
--}
-countRootsSturm :: (Fractional a, Eq a, Ord a) => (a, a, Poly a) -> Int
-countRootsSturm (l, r, p) =
-    -- p has degree 2 or more so we can construct the Sturm sequence
-    signVariations psl - signVariations psr
-  where
-    ps = reversedSturmSequence p
-    psl = map (flip eval l) ps
-    psr = map (flip eval r) ps
-
-{-| Number of sign variations in a list of real numbers.
-
-Given a list @c0, c1, c2, . . . ck@,
-then a sign variation (or sign change) in the sequence
-is a pair of indices @i < j@ such that @ci*cj < 0@,
-and either @j = i + 1@ or @ck = 0@ for all @@ such that @i < k < j@.
--}
-signVariations :: (Fractional a, Ord a) => [a] -> Int
-signVariations xs =
-    length (filter (< 0) pairsMultiplied)
-  where
-    -- we simply remove zero elements to implement the clause
-    -- "ck = 0 for all k such that i < k < j"
-    zeroesRemoved = filter (/= 0) xs
-    pairsMultiplied = zipWith (*) zeroesRemoved (drop 1 zeroesRemoved)
-
-{-|
-Construct the [Sturm sequence
-](https://en.wikipedia.org/wiki/Sturm%27s_theorem)
-of a given polynomial @p@. The Sturm sequence is given by the polynomials
-
-> p0 = p
-> p1 = differentiate p
-> p{i+1} = - rem(p{i-1}, pi)
-
-where @rem@ denotes the remainder under 'euclidianDivision'.
-We truncate the list when one of the @pi = 0@.
-
-For ease of implementation, we
-
-* construct the 'reverse' of the Sturm sequence.
-  This does not affect the number of sign variations that the usage site
-  will be interested in.
-
-* assume that the @degree p >= 1@.
--}
-reversedSturmSequence :: (Fractional a, Ord a) => Poly a -> [Poly a]
-reversedSturmSequence p =
-    go [differentiate p, p]
-  where
-    -- Note that this is called with a list of length 2 and grows the list,
-    -- so we don't need to match all cases.
-    go ps@(pI : pIminusOne : _)
-        | remainder == zero = ps
-        | otherwise = go (negate remainder : ps)
-      where
-        remainder = snd $ euclidianDivision pIminusOne pI
-    go _ = error "reversedSturmSequence: impossible"
 
 -- | Check whether a polynomial is monotonically increasing on
 -- a given interval.
@@ -543,6 +467,7 @@ isMonotonicallyIncreasingOn
 isMonotonicallyIncreasingOn p (x1,x2) =
     eval p x1 <= eval p x2
     && countRoots (x1, x2, differentiate p) == 0
+    -- FIXME: What about double roots?
 
 {-|
 Measure whether or not a polynomial is consistently above or below zero,
@@ -571,44 +496,68 @@ assuming that there is exactly one root in the given interval.
 This precondition has to be checked through other means,
 e.g. 'countRoots'.
 
-We find the root by repeatedly halving the interval in which the root must lie
+We find the root by first forming the square-free factorisation of the polynomial,
+to eliminate repeated roots. One of the factors will have a root in the interval,
+so we count roots for each factor until we find the one with a root in the interval.
+Then we use the bisection method to find the root.
+repeatedly halving the interval in which the root must lie
 until its width is less than the specified precision.
 Constant and linear polynomials, @degree p <= 1@, are treated as special cases.
 -}
 findRoot
-    :: (Fractional a, Eq a, Num a, Ord a) => a -> (a, a) -> Poly a -> Maybe a
-findRoot precision (l, u) p
-    -- if the polynomial is zero, the whole interval is a root, so return the basepoint
-    | degp < 0 = Just l
-    -- if the poly is a non-zero constant, no root is present
-    | degp == 0 = Nothing
-    -- if the polynomial has degree 1, can calculate the root exactly
-    | degp == 1 = Just (-(head ps / last ps)) -- p0 + p1x = 0 => x = -p0/p1
-    | precision <= 0 = error "Invalid precision value"
-    | otherwise = Just (halveInterval precision l u pl pu)
+    :: forall a. (Fractional a, Eq a, Num a, Ord a) => a -> (a, a) -> Poly a -> Maybe a
+findRoot precision (lower, upper) poly = if null rootFactors then Nothing
+                              else getRoot precision (lower, upper) (head rootFactors)
   where
-    Poly ps = p
-    degp = degree p
-    pu = eval p u
-    pl = eval p l
-    halveInterval eps x y px py
-        -- if we already have a root, chosse it
-        | px == 0 = x
-        | py == 0 = y
-        -- when the interval is small enough, stop:
-        -- the root is in this interval, so take the mid point
-        | width <= eps = mid
-        -- choose the lower half,
-        -- as the polynomial has different signs at the ends
-        | px * pmid < 0 = halveInterval eps x mid px pmid
-        -- choose the upper half
-        | otherwise = halveInterval eps mid y pmid py
+    rootFactors = filter (\x -> countRoots (lower, upper, x) /= 0) (squareFreeFactorisation poly)
+    --getRoot :: forall a. (Fractional a, Eq a, Num a, Ord a) => a -> (a, a) -> Poly a -> Maybe a
+    getRoot eps (l, u) p
+      -- if the polynomial is zero, the whole interval is a root, so return the basepoint
+      | degp < 0 = Just l
+      -- if the poly is a non-zero constant, no root is present
+      | degp == 0 = Nothing
+      -- if the polynomial has degree 1, can calculate the root exactly
+      | degp == 1 = Just (-(head ps / last ps)) -- p0 + p1x = 0 => x = -p0/p1
+      | eps <= 0 = error "Invalid precision value"
+      | otherwise = bisect eps (l, u) p
+      where
+        ps = toCoefficients p
+        degp = degree p
+        --pu = eval p u
+        --pl = eval p l
+bisect :: (Fractional a, Eq a, Num a, Ord a) => a -> (a, a) -> Poly a -> Maybe a
+bisect e (x, y) p'
+  | px == 0 = Just x
+  | py == 0 = Just y
+  | pmid == 0 = Just mid
+  | width <= e = Just mid
+  | signum px /= signum pmid = bisect e (x, mid) p'
+  | otherwise = bisect e (mid, y) p'
+  where
+    width = y - x
+    mid = x + width / 2
+    pmid = eval p' mid
+    px = eval p' x
+    py = eval p' y
+    {- bisect :: (Fractional a, Eq a, Num a, Ord a) => a -> (a, a) -> (a, a) -> Poly a -> Maybe a
+    bisect e (x, y) (px, py) p'
+      -- if we already have a root, choose it
+      | px == 0 = Just x
+      | py == 0 = Just y
+      | pmid == 0 = Just mid
+      -- when the interval is small enough, stop:
+      -- the root is in this interval, so take the mid point
+      | width <= e = Just mid
+      -- choose the lower half, if the polynomial has different signs at the ends
+      | signum px /= signum pmid = bisect e (x, mid) (px, pmid) p'
+      -- otherwise choose the upper half
+      | otherwise = bisect e (mid, y) (pmid, py) p'
       where
         width = y - x
         mid = x + width / 2
-        pmid = eval p mid
+        pmid = eval p' mid-}
 
-{-| Otherwise we have a polynomial:
+{-| We are seeking the point at which a polynomial has a specific value.:
 subtract the value we are looking for so that we seek a zero crossing
 -}
 root
@@ -619,3 +568,46 @@ root
     -> Poly a
     -> Maybe a
 root e x (l, u) p = findRoot e (l, u) (p - constant x)
+
+-- | Greatest monic common divisor of two polynomials.
+gcdPoly :: forall a. (Fractional a, Eq a, Num a, Ord a) => Poly a -> Poly a -> Poly a
+gcdPoly a b = if b == zero then a else makeMonic (gcdPoly b (polyRemainder a b))
+  where
+    makeMonic :: Poly a -> Poly a
+    makeMonic (Poly as) = scale (1 / last as) (Poly as)
+    polyRemainder :: Poly a -> Poly a -> Poly a
+    polyRemainder x y = snd (euclidianDivision (x,y))
+
+{-|
+We compute the square-free factorisation of a polynomial using Yun's algorithm.
+Yun, David Y.Y. (1976). "On square-free decomposition algorithms". 
+SYMSAC '76 Proceedings of the third ACM Symposium on Symbolic and Algebraic Computation. 
+Association for Computing Machinery. pp. 26–35. doi:10.1145/800205.806320. ISBN 978-1-4503-7790-4. S2CID 12861227.
+https://dl.acm.org/doi/10.1145/800205.806320
+G <- gcd (P, P')
+C1 <- P / G
+D1 <- P' / G - C1'
+until Ci = 1 do
+    Pi <- gcd (Ci, Di)
+    Ci+1 <- Ci/Pi
+    Di+1 <- Di / Ai - Ci+1'
+-}
+squareFreeFactorisation
+    :: (Fractional a, Eq a, Num a, Ord a) => Poly a -> [Poly a]
+squareFreeFactorisation p =
+  -- if p has degree <= 1 it can have no factors but itself
+  if degree p <= 1 then [p] else go c1 d1
+    where
+      diffP = differentiate p
+      g0 = gcdPoly p diffP
+      c1 = p `divide` g0
+      d1 = (diffP `divide` g0) - differentiate c1
+      divide x y = fst (euclidianDivision (x,y))
+      go c d
+        | c == constant 1 = [] -- terminate the recursion
+        | a' == constant 1 = go c' d' -- skip over the constant polynomial
+        | otherwise = a' : go c' d'
+          where
+            a' = gcdPoly c d
+            c' = c `divide` a'
+            d' = (d `divide` a') - differentiate c'
