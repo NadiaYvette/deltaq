@@ -56,6 +56,7 @@ import Math.Combinatorics.Exact.Binomial -- needed to automatically derive NFDat
     ( choose
     )
 
+import qualified Data.Maybe as Maybe (listToMaybe)
 import qualified Data.Function.Class as Fun
 
 {-----------------------------------------------------------------------------
@@ -510,8 +511,10 @@ findRoot
     -> (a, a)    -- ^ interval to search
     -> Poly a    -- ^ polynomial to solve
     -> Maybe a   -- ^ Just root if found, Nothing otherwise
-findRoot precision (lower, upper) poly = if null rootFactors then Nothing
-                              else getRoot precision (lower, upper) (head rootFactors)
+findRoot precision (lower, upper) poly
+  | Just factor <- Maybe.listToMaybe rootFactors
+  = getRoot precision (lower, upper) factor
+  | otherwise = Nothing
   where
     rootFactors :: [Poly a]
     rootFactors = filter (\x -> countRoots (lower, upper, x) /= 0) (squareFreeFactorisation poly)
