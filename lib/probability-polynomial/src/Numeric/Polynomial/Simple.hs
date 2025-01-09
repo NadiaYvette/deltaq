@@ -505,12 +505,17 @@ until its width is less than the specified precision.
 Constant and linear polynomials, @degree p <= 1@, are treated as special cases.
 -}
 findRoot
-    :: forall a. (Fractional a, Eq a, Num a, Ord a) => a -> (a, a) -> Poly a -> Maybe a
+    :: forall a. (Fractional a, Eq a, Num a, Ord a)
+    => a         -- ^ precision
+    -> (a, a)    -- ^ interval to search
+    -> Poly a    -- ^ polynomial to solve
+    -> Maybe a   -- ^ Just root if found, Nothing otherwise
 findRoot precision (lower, upper) poly = if null rootFactors then Nothing
                               else getRoot precision (lower, upper) (head rootFactors)
   where
+    rootFactors :: [Poly a]
     rootFactors = filter (\x -> countRoots (lower, upper, x) /= 0) (squareFreeFactorisation poly)
-    --getRoot :: forall a. (Fractional a, Eq a, Num a, Ord a) => a -> (a, a) -> Poly a -> Maybe a
+    getRoot :: a -> (a, a) -> Poly a -> Maybe a
     getRoot eps (l, u) p
       -- if the polynomial is zero, the whole interval is a root, so return the basepoint
       | degp < 0 = Just l
@@ -521,7 +526,9 @@ findRoot precision (lower, upper) poly = if null rootFactors then Nothing
       | eps <= 0 = error "Invalid precision value"
       | otherwise = bisect eps (l, u) p
       where
+        ps :: [a]
         ps = toCoefficients p
+        degp :: Int
         degp = degree p
         --pu = eval p u
         --pl = eval p l
