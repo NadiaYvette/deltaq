@@ -511,25 +511,26 @@ findRoot
     -> (a, a)    -- ^ interval to search
     -> Poly a    -- ^ polynomial to solve
     -> Maybe a   -- ^ Just root if found, Nothing otherwise
-findRoot precision (lower, upper) poly
-  | Just factor <- Maybe.listToMaybe rootFactors
-  = getRoot precision (lower, upper) factor
+findRoot precision interval@(lower, upper) poly
+  | Just factor <- Maybe.listToMaybe rootFactors = getRoot factor
   | otherwise = Nothing
   where
+    vanishesThere :: Poly a -> Bool
+    vanishesThere p = countRoots (lower, upper, p) /= 0
     rootFactors :: [Poly a]
-    rootFactors = filter (\x -> countRoots (lower, upper, x) /= 0) $ squareFreeFactorisation poly
-    getRoot :: a -> (a, a) -> Poly a -> Maybe a
-    getRoot eps (lo, hi) p
+    rootFactors = filter vanishesThere $ squareFreeFactorisation poly
+    getRoot :: Poly a -> Maybe a
+    getRoot p
       -- | If the polynomial is zero, the whole interval is a
       --   root, so return the basepoint.
-      | Poly [0] <- p = Just lo
+      | Poly [0] <- p = Just lower
       -- | If the poly is a non-zero constant, no root is present.
       | Poly [_] <- p = Nothing
       -- | If the polynomial has degree 1, we can calculate the
       --   root exactly via p0 + p1x = 0 => x = -p0/p1
       | Poly [p0, p1] <- p = Just (-(p0 / p1))
-      | eps <= 0 = error "Invalid precision value"
-      | otherwise = bisect eps (lo, hi) p
+      | precision <= 0 = error "Invalid precision value"
+      | otherwise = bisect precision interval p
 
 bisect :: (Fractional a, Eq a, Num a, Ord a) => a -> (a, a) -> Poly a -> Maybe a
 bisect e (x, y) p'
