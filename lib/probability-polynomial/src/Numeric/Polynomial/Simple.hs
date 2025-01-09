@@ -517,24 +517,20 @@ findRoot precision (lower, upper) poly
   | otherwise = Nothing
   where
     rootFactors :: [Poly a]
-    rootFactors = filter (\x -> countRoots (lower, upper, x) /= 0) (squareFreeFactorisation poly)
+    rootFactors = filter (\x -> countRoots (lower, upper, x) /= 0) $ squareFreeFactorisation poly
     getRoot :: a -> (a, a) -> Poly a -> Maybe a
-    getRoot eps (l, u) p
-      -- if the polynomial is zero, the whole interval is a root, so return the basepoint
-      | degp < 0 = Just l
-      -- if the poly is a non-zero constant, no root is present
-      | degp == 0 = Nothing
-      -- if the polynomial has degree 1, can calculate the root exactly
-      | degp == 1 = Just (-(head ps / last ps)) -- p0 + p1x = 0 => x = -p0/p1
+    getRoot eps (lo, hi) p
+      -- | If the polynomial is zero, the whole interval is a
+      --   root, so return the basepoint.
+      | Poly [0] <- p = Just lo
+      -- | If the poly is a non-zero constant, no root is present.
+      | Poly [_] <- p = Nothing
+      -- | If the polynomial has degree 1, we can calculate the
+      --   root exactly via p0 + p1x = 0 => x = -p0/p1
+      | Poly [p0, p1] <- p = Just (-(p0 / p1))
       | eps <= 0 = error "Invalid precision value"
-      | otherwise = bisect eps (l, u) p
-      where
-        ps :: [a]
-        ps = toCoefficients p
-        degp :: Int
-        degp = degree p
-        --pu = eval p u
-        --pl = eval p l
+      | otherwise = bisect eps (lo, hi) p
+
 bisect :: (Fractional a, Eq a, Num a, Ord a) => a -> (a, a) -> Poly a -> Maybe a
 bisect e (x, y) p'
   | px == 0 = Just x
