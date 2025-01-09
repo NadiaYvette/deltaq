@@ -56,6 +56,7 @@ import Math.Combinatorics.Exact.Binomial -- needed to automatically derive NFDat
     ( choose
     )
 
+import qualified Data.List as List (uncons)
 import qualified Data.Maybe as Maybe (listToMaybe)
 import qualified Data.Function.Class as Fun
 
@@ -407,12 +408,12 @@ countRoots (l, r, p) = case degree p of
     When c0, c1, c2, . . . ck is a finite sequence of real numbers, then a sign variation or sign change in the sequence
     is a pair of indices i < j such that cicj < 0, and either j = i + 1 or ck = 0 for all k such that i < k < j
     -}
-    signVariations xs = length (filter (< 0) pairsMultiplied)
-      where
-        -- we implement the clause "ck = 0 for all k such that i < k < j" by removing zero elements
-        zeroesRemoved = filter (/= 0) xs
-        -- TODO: deal with all zero corner case
-        pairsMultiplied = zipWith (*) zeroesRemoved (tail zeroesRemoved)
+    signVariations xs
+      | Just (z, zs) <- List.uncons $ filter (/= 0) xs
+      -- ^ We implement the clause "ck = 0 for all k such that i < k < j"
+      --   by removing zero elements.
+      = length . filter (< 0) $ zipWith (*) (z : zs) zs
+      | otherwise = 0 -- ^ This is the all zero corner case.
     sturmSequence :: (Fractional a, Eq a, Ord a) => a -> Poly a -> [a]
     sturmSequence x q = map (flip eval x) (doSeq [differentiate q, q])
       where
